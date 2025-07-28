@@ -494,10 +494,9 @@ def get_residue_rsa_json(sasa_threshold=0.1):
         
         return json.dumps(rsa_records)
     except Exception:
-        return json.dumps([])
+        return json.dump()
 
-
-def process_cif_files_to_dataframe(folder_path="."):
+def process_cif_files_to_dataframe(folder_path=".", task_id=1, total_tasks=35):
     results = []
     
     default_sasa_threshold_for_atom = 0.1
@@ -507,84 +506,86 @@ def process_cif_files_to_dataframe(folder_path="."):
     default_dbscan_eps = 4.0
     default_dbscan_min_samples = 2
 
-    i = 0
-    for filename in os.listdir(folder_path):
-        i = i + 1
-        print(i)
+    all_cif_files = sorted([f for f in os.listdir(folder_path) if f.endswith(".cif")])
+    files_to_process = [f for i, f in enumerate(all_cif_files) if (i % total_tasks) + 1 == task_id]
+
+    print(f"Task {task_id} will process {len(files_to_process)} files.")
+    sys.stdout.flush()
+
+    for i, filename in enumerate(files_to_process, 1):
+        print(f"[{i}/{len(files_to_process)}] Processing {filename}")
         sys.stdout.flush()
-        print(filename)
-        sys.stdout.flush()
-        if filename.endswith(".cif"):
-            file_path = os.path.join(folder_path, filename)
 
-            cmd.reinitialize()
-            
-            try:
-                cmd.load(file_path, filename.split('.')[0])
-                
-                if cmd.count_atoms("all") == 0:
-                    continue
+        file_path = os.path.join(folder_path, filename)
 
-                file_data = {
-                    "CIF_File_Name": filename,
-                    "Total_Surface_SASA": get_total_surface_sasa(),
-                    "Chain_A_Surface_SASA": get_chain_surface_sasa(chain="A"),
-                    "Chain_B_Surface_SASA": get_chain_surface_sasa(chain="B"),
-                }
+        cmd.reinitialize()
 
-                hydro_count, polar_count, charged_count, other_count = \
-                    get_surface_residues_by_type_counts(sasa_threshold_for_residue=default_sasa_threshold_for_residue)
-                file_data["Surface_Hydrophobic_Residues_Count"] = hydro_count
-                file_data["Surface_Polar_Residues_Count"] = polar_count
-                file_data["Surface_Charged_Residues_Count"] = charged_count
-                file_data["Surface_Other_Residues_Count"] = other_count
+        try:
+            cmd.load(file_path, filename.split('.')[0])
 
-                file_data["Hydrophobic_Patch_Clusters_Count"] = \
-                    get_hydrophobic_patch_clusters(eps=default_dbscan_eps, min_samples=default_dbscan_min_samples)
-                
-                file_data["Polar_Surface_Area_B_gt_25"] = \
-                    get_polar_surface_area(b_factor_threshold=default_b_factor_threshold, sasa_threshold_for_atom=default_sasa_threshold_for_atom)
-                
-                file_data["Charged_Surface_Area_B_gt_25"] = \
-                    get_charged_surface_area(b_factor_threshold=default_b_factor_threshold, sasa_threshold_for_atom=default_sasa_threshold_for_atom)
-                
-                file_data["Disulfide_Surface_SASA"] = \
-                    get_disulfide_surface_sasa(sasa_threshold_for_atom=default_sasa_threshold_for_atom)
+            if cmd.count_atoms("all") == 0:
+                continue
 
-                file_data["Avg_Residue_Surface_SASA"] = \
-                    get_avg_residue_surface_sasa(sasa_threshold_for_atom=default_sasa_threshold_for_atom)
-                
-                file_data["Num_Residues_with_Surface_SASA"] = \
-                    get_num_residues_with_surface_sasa(sasa_threshold_for_atom=default_sasa_threshold_for_atom)
+            file_data = {
+                "CIF_File_Name": filename,
+                "Total_Surface_SASA": get_total_surface_sasa(),
+                "Chain_A_Surface_SASA": get_chain_surface_sasa(chain="A"),
+                "Chain_B_Surface_SASA": get_chain_surface_sasa(chain="B"),
+            }
 
-                file_data["Avg_Relative_Surface_SASA_Chain_A"] = \
-                    get_avg_relative_surface_sasa(rsa_threshold=default_rsa_threshold, target_chain="A", sasa_threshold_for_atom=default_sasa_threshold_for_atom)
-                
-                file_data["Num_Highly_Exposed_Residues_Chain_A"] = \
-                    get_num_highly_exposed_residues(rsa_threshold=default_rsa_threshold, target_chain="A", sasa_threshold_for_atom=default_sasa_threshold_for_atom)
-                
-                donors, acceptors = get_count_surface_hbond_atoms(b_factor_threshold=default_b_factor_threshold, sasa_threshold_for_atom=default_sasa_threshold_for_atom)
-                file_data["Surface_Hbond_Donors_Count"] = donors
-                file_data["Surface_Hbond_Acceptors_Count"] = acceptors
-                
-                file_data["Roughness"] = get_roughness(sasa_threshold_for_atom=default_sasa_threshold_for_atom)
-                file_data["Surface_Area_Per_Residue_Type"] = json.dumps(
-                    get_surface_area_per_residue_type(sasa_threshold=default_sasa_threshold_for_atom)
-                )
-                file_data["Net_Surface_Charge"] = get_net_surface_charge(sasa_threshold=default_sasa_threshold_for_atom)
-                file_data["Avg_RSA_Chain_A"] = get_avg_rsa_per_chain(
-                    target_chain="A", rsa_threshold=default_rsa_threshold, 
-                    sasa_threshold=default_sasa_threshold_for_atom
-                )
-                file_data["Residue_RSA_Values_JSON"] = get_residue_rsa_json(
-                    sasa_threshold=default_sasa_threshold_for_atom
-                )
-                results.append(file_data)
+            hydro_count, polar_count, charged_count, other_count = \
+                get_surface_residues_by_type_counts(sasa_threshold_for_residue=default_sasa_threshold_for_residue)
+            file_data["Surface_Hydrophobic_Residues_Count"] = hydro_count
+            file_data["Surface_Polar_Residues_Count"] = polar_count
+            file_data["Surface_Charged_Residues_Count"] = charged_count
+            file_data["Surface_Other_Residues_Count"] = other_count
 
-            except Exception:
-                pass
-            finally:
-                cmd.delete("all")
+            file_data["Hydrophobic_Patch_Clusters_Count"] = \
+                get_hydrophobic_patch_clusters(eps=default_dbscan_eps, min_samples=default_dbscan_min_samples)
+
+            file_data["Polar_Surface_Area_B_gt_25"] = \
+                get_polar_surface_area(b_factor_threshold=default_b_factor_threshold, sasa_threshold_for_atom=default_sasa_threshold_for_atom)
+
+            file_data["Charged_Surface_Area_B_gt_25"] = \
+                get_charged_surface_area(b_factor_threshold=default_b_factor_threshold, sasa_threshold_for_atom=default_sasa_threshold_for_atom)
+
+            file_data["Disulfide_Surface_SASA"] = \
+                get_disulfide_surface_sasa(sasa_threshold_for_atom=default_sasa_threshold_for_atom)
+
+            file_data["Avg_Residue_Surface_SASA"] = \
+                get_avg_residue_surface_sasa(sasa_threshold_for_atom=default_sasa_threshold_for_atom)
+
+            file_data["Num_Residues_with_Surface_SASA"] = \
+                get_num_residues_with_surface_sasa(sasa_threshold_for_atom=default_sasa_threshold_for_atom)
+
+            file_data["Avg_Relative_Surface_SASA_Chain_A"] = \
+                get_avg_relative_surface_sasa(rsa_threshold=default_rsa_threshold, target_chain="A", sasa_threshold_for_atom=default_sasa_threshold_for_atom)
+
+            file_data["Num_Highly_Exposed_Residues_Chain_A"] = \
+                get_num_highly_exposed_residues(rsa_threshold=default_rsa_threshold, target_chain="A", sasa_threshold_for_atom=default_sasa_threshold_for_atom)
+
+            donors, acceptors = get_count_surface_hbond_atoms(b_factor_threshold=default_b_factor_threshold, sasa_threshold_for_atom=default_sasa_threshold_for_atom)
+            file_data["Surface_Hbond_Donors_Count"] = donors
+            file_data["Surface_Hbond_Acceptors_Count"] = acceptors
+
+            file_data["Roughness"] = get_roughness(sasa_threshold_for_atom=default_sasa_threshold_for_atom)
+            file_data["Surface_Area_Per_Residue_Type"] = json.dumps(
+                get_surface_area_per_residue_type(sasa_threshold=default_sasa_threshold_for_atom)
+            )
+            file_data["Net_Surface_Charge"] = get_net_surface_charge(sasa_threshold=default_sasa_threshold_for_atom)
+            file_data["Avg_RSA_Chain_A"] = get_avg_rsa_per_chain(
+                target_chain="A", rsa_threshold=default_rsa_threshold,
+                sasa_threshold=default_sasa_threshold_for_atom
+            )
+            file_data["Residue_RSA_Values_JSON"] = get_residue_rsa_json(
+                sasa_threshold=default_sasa_threshold_for_atom
+            )
+            results.append(file_data)
+
+        except Exception:
+            pass
+        finally:
+            cmd.delete("all")
 
     if results:
         df = pd.DataFrame(results)
@@ -592,15 +593,20 @@ def process_cif_files_to_dataframe(folder_path="."):
     else:
         return pd.DataFrame()
     
-cif_folder_path = r"C:\Users\anvit\Documents\CIF\alphafold_pdbs"
-
-analysis_df = process_cif_files_to_dataframe(cif_folder_path)
+cif_folder_path = "/u/project/kappel/fraza/CIF Files/AlphaFold/alphafold_pdbs"
+task_id_str = os.getenv("SGE_TASK_ID", "1")
+try:
+    task_id = int(task_id_str)
+except ValueError:
+    print(f"Invalid task_id value: {task_id_str}, defaulting to 1")
+    task_id = 1
+analysis_df = process_cif_files_to_dataframe(cif_folder_path, task_id=task_id)
 print(analysis_df.columns)
 sys.stdout.flush()
 print("hi")
 sys.stdout.flush()
 if not analysis_df.empty:
-    output_csv_path = "protein_surface_analysis_results.csv"
+    output_csv_path = f"protein_surface_analysis_{task_id}.csv"
     analysis_df.to_csv(output_csv_path, index=False)
     
 pymol.cmd.quit()
