@@ -70,6 +70,13 @@ that matches with residue position, so first in color enoding has the position d
                 
 
 There are some empty columns since the uniprot mapping on the PDB is incomplete, meaning some chains are not said to be a certain chain (ex. chain G on 7OKY), so for those
-we did not calculate statistics as we are not sure if they would be a uniprot on the RBDpep table or not. It accounts for 243 lines of the total 20,822 lines, so we decided to 
-ignore them as it is 1.16%
+we did not calculate statistics as we are not sure if they would be a uniprot on the RBDpep table or not. It accounts for 243 lines of the total 20,822 lines, so we decided to ignore them as it is 1.16%.
+
+When running on hoffman using the PDB_to_run.xlsx, do in batches of a 100 each (apart from 200-300, split up from 200-240, 240-260, 260-300) in order to finish in 24 hours 
+it uses ~ 7GB, but I requested 32 GB since didn't know. Also the code will check if the LysC frag matches up with the AA sequence on the chain, and in some cases it will not
+line up, so it outputs the mismatch on the output file, so manually transfer or edit, some fragments do not match really frequently, but not in every case of that fragment (so on some PDBs it doesn't match up, others it does).
+
+I have the current combined output saved as full_pdb_analysis_pymol.xlsx on the project directory in my folder on hoffman2.
+
+
 
