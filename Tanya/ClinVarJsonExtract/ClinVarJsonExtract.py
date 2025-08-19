@@ -2,18 +2,20 @@ import ijson
 import pandas as pd
 import re
 
-# Paths (renamed to show dedup)
+# --- Paths ---
 input_json = "/u/home/t/tchhabri/project-kappel/clinvar/full_output_latest_august_2025.json"
 input_uniprot_excel = "/u/home/t/tchhabri/project-kappel/with_alphafold_codes.xlsx"
-output_excel = "/u/home/t/tchhabri/project-kappel/clinvar/full_rbdpep_uniprot_missense_mutation_dedup.xlsx"
-output_uniprot_with_counts = "/u/home/t/tchhabri/project-kappel/clinvar/rbd_pep_with_missense_mutations_count_dedup.xlsx"
+output_excel = "/u/home/t/tchhabri/project-kappel/clinvar/full_rbdpep_uniprot_missense_mutation_fixed_v4.xlsx"
+output_uniprot_with_counts = "/u/home/t/tchhabri/project-kappel/clinvar/rbd_pep_with_missense_mutations_count_dedup4.xlsx"
 
-# Regex patterns
+# --- Regex patterns ---
 MC_KEY_RE = re.compile(r"ClassifiedRecord_SimpleAllele_HGVSlist_HGVS_\d+_MolecularConsequence(?:_\d+)?_@Type$")
 HGVS_PREFIX_RE = re.compile(r"_MolecularConsequence(?:_\d+)?_@Type$")
 PROT_CHANGE_RE = re.compile(r"ClassifiedRecord_SimpleAllele_HGVSlist_HGVS_\d+_ProteinExpression_@change$")
+PROT_EXPR_TEXT_RE = re.compile(r"ClassifiedRecord_SimpleAllele_HGVSlist_HGVS_\d+_ProteinExpression_Expression_#text$")
 GENE_SYMBOL_KEY_RE = re.compile(r"ClassifiedRecord_SimpleAllele_GeneList_Gene(?:_\d+)?_@Symbol$")
 
+# --- Helpers ---
 def norm(s: str) -> str:
     s = str(s if s is not None else "").strip().lower()
     return re.sub(r"[\s_]+", " ", s)
@@ -71,6 +73,18 @@ def get_all_protein_changes(flat: dict) -> str:
                 changes.append(str(v))
     return "; ".join(sorted(set(changes))) if changes else "NA"
 
+def get_all_protein_hgvs_expressions(flat: dict):
+    fulls = []
+    codes = []
+    for k, v in flat.items():
+        if PROT_EXPR_TEXT_RE.match(k):
+            if v and v != "NA":
+                fulls.append(str(v))
+                code = v.split(":", 1)[0] if ":" in v else v
+                codes.append(code)
+    return ("; ".join(sorted(set(fulls))) if fulls else "NA",
+            "; ".join(sorted(set(codes))) if codes else "NA")
+
 def get_indexed_group(flat: dict, base_prefix: str, suffixes):
     results = {}
     for suffix in suffixes:
@@ -95,6 +109,32 @@ def collect_molecular_consequences(flat: dict) -> str:
             vals.append(str(v).strip())
     return "; ".join(sorted(set(vals))) if vals else "NA"
 
+def extract_gene_info(flat: dict, target_gene_symbol: str, assembly="GRCh38"):
+    info = {"GeneFullName": "NA", "GeneID": "NA", "RelationshipType": "NA",
+            "Chromosome": "NA", "GenomicStart": "NA", "GenomicStop": "NA"}
+    target_norm = target_gene_symbol.strip().upper()
+    for k, v in flat.items():
+        if k.endswith("@Symbol") and str(v).strip().upper() == target_norm:
+            loc_keys = [sk for sk in flat if sk.startswith(k.rsplit("_@Symbol",1)[0]+"_Location_SequenceLocation_")]
+            idx = None
+            for sk in loc_keys:
+                if sk.endswith(f"_@Assembly") and flat[sk] == assembly:
+                    m = re.search(r"_Location_SequenceLocation_(\d+)_@Assembly$", sk)
+                    if m:
+                        idx = m.group(1)
+                        break
+            if idx is None:
+                idx = "0"
+            prefix = k.rsplit("_@Symbol", 1)[0]
+            info["GeneFullName"] = flat.get(prefix + "_@FullName", "NA")
+            info["GeneID"] = flat.get(prefix + "_@GeneID", "NA")
+            info["RelationshipType"] = flat.get(prefix + "_@RelationshipType", "NA")
+            info["Chromosome"] = flat.get(prefix + f"_Location_SequenceLocation_{idx}_@Chr", "NA")
+            info["GenomicStart"] = flat.get(prefix + f"_Location_SequenceLocation_{idx}_@start", "NA")
+            info["GenomicStop"] = flat.get(prefix + f"_Location_SequenceLocation_{idx}_@stop", "NA")
+            return info
+    return info
+
 def extract_fields(flat: dict):
     if not has_coding_missense(flat):
         return None
@@ -112,6 +152,7 @@ def extract_fields(flat: dict):
     condition_list = "; ".join(sorted(set(v for k, v in flat.items() if "GermlineClassification_ConditionList" in k and v and v != "NA"))) or "NA"
     pubmed_ids = "; ".join(sorted(set(v for k, v in flat.items() if "Citation_ID_#text" in k and v and v != "NA"))) or "NA"
     molecular_consequence = collect_molecular_consequences(flat)
+    prot_hgvs_full, prot_hgvs_code = get_all_protein_hgvs_expressions(flat)
     return {
         "VariationID": flat.get("@VariationID", "NA"),
         "Accession": flat.get("@Accession", "NA"),
@@ -126,6 +167,8 @@ def extract_fields(flat: dict):
         "RefAllele": ref_allele,
         "AltAllele": alt_allele,
         "ProteinChange": get_all_protein_changes(flat),
+        "ProteinHGVSFull": prot_hgvs_full,
+        "ProteinHGVSCode": prot_hgvs_code,
         "MutatedFrom": ref_aa,
         "ProteinPosition": pos,
         "MutatedTo": alt_aa,
@@ -157,10 +200,11 @@ def main():
         if gene and gene != "NA" and prot and prot != "NA":
             gene_to_uniprots.setdefault(gene, []).append(prot)
     tracked_genes = set(gene_to_uniprots.keys())
-    seen = set()  # (UniProtID, VariationID) to avoid duplicates
+    seen = set()
     output_rows = []
     missense_counts = {uid: 0 for uid in df["ProtID"].dropna().unique()}
     variant_count = 0
+
     for flat in stream_variants(input_json):
         variant_count += 1
         if variant_count % 1000 == 0:
@@ -181,23 +225,35 @@ def main():
                 rec_copy = rec.copy()
                 rec_copy["GeneSymbol"] = g
                 rec_copy["UniProtID"] = uid
+                # overwrite NA gene info using extract_gene_info
+                gene_info = extract_gene_info(flat, g, assembly="GRCh38")
+                for col, val in gene_info.items():
+                    if rec_copy.get(col, "NA") == "NA" and val != "NA":
+                        rec_copy[col] = val
                 output_rows.append(rec_copy)
                 missense_counts[uid] = missense_counts.get(uid, 0) + 1
+
     if not output_rows:
         print("No variants found for provided genes/UniProt IDs.")
         return
+
     df["MissenseVariantCount"] = df["ProtID"].map(missense_counts).fillna(0).astype(int)
     df.to_excel(output_uniprot_with_counts, index=False)
     print(f"Saved updated counts -> {output_uniprot_with_counts}")
+
     df_out = pd.DataFrame(output_rows)
     df_columns = ["UniProtID", "GeneSymbol", "VariationID", "Accession", "VariationName", "Species", 
                   "GeneFullName", "GeneID", "RelationshipType", "Chromosome", "GenomicStart", "GenomicStop", 
-                  "RefAllele", "AltAllele", "ProteinChange", "MutatedFrom", "ProteinPosition", "MutatedTo", 
+                  "RefAllele", "AltAllele", "ProteinChange", "ProteinHGVSFull", "ProteinHGVSCode",
+                  "MutatedFrom", "ProteinPosition", "MutatedTo", 
                   "MolecularConsequence", "VariantType", "NumberOfSubmissions", "NumberOfSubmitters", 
                   "ReviewStatus", "GermlineClassification", "ConditionList", "Diseases", "PubMedIDs"]
-    df_out = df_out[[c for c in df_columns if c in df_out.columns]].sort_values(by=["UniProtID", "GeneSymbol", "VariationID"], kind="stable")
+    df_out = df_out[[c for c in df_columns if c in df_out.columns]].sort_values(
+        by=["UniProtID", "GeneSymbol", "VariationID"], kind="stable"
+    )
     df_out.to_excel(output_excel, index=False)
     print(f"Wrote filtered unique variants -> {output_excel}")
+
     print("\nMissense variant counts per UniProt ID:")
     for uid, count in sorted(missense_counts.items()):
         print(f"{uid}: {count}")
