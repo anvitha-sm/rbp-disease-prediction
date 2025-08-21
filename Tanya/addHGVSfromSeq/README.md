@@ -1,0 +1,1 @@
+This script takes an input of a spreadsheet with Uniprot IDs and Full Sequences and using that fetches all RefSeq NP_ accessions linked to a UniProt ID where the input sequence matches exactly. Returns a comma-separated list and description strings for the RefSeq NP_ IDs. (one column for each)
