@@ -1,12 +1,14 @@
+#!/usr/bin/env python3
 import ijson
 import pandas as pd
 import re
+import json
 
 # --- Paths ---
 input_json = "/u/home/t/tchhabri/project-kappel/clinvar/full_output_latest_august_2025.json"
 input_uniprot_excel = "/u/home/t/tchhabri/project-kappel/with_alphafold_codes.xlsx"
-output_excel = "/u/home/t/tchhabri/project-kappel/clinvar/full_rbdpep_uniprot_missense_mutation_fixed_v4.xlsx"
-output_uniprot_with_counts = "/u/home/t/tchhabri/project-kappel/clinvar/rbd_pep_with_missense_mutations_count_dedup4.xlsx"
+output_excel = "/u/home/t/tchhabri/project-kappel/clinvar/ClinvarWithAllClassifications4.xlsx"
+output_uniprot_with_counts = "/u/home/t/tchhabri/project-kappel/clinvar/ClinvarWithAllClassifications4_missenseCount.xlsx"
 
 # --- Regex patterns ---
 MC_KEY_RE = re.compile(r"ClassifiedRecord_SimpleAllele_HGVSlist_HGVS_\d+_MolecularConsequence(?:_\d+)?_@Type$")
@@ -14,6 +16,10 @@ HGVS_PREFIX_RE = re.compile(r"_MolecularConsequence(?:_\d+)?_@Type$")
 PROT_CHANGE_RE = re.compile(r"ClassifiedRecord_SimpleAllele_HGVSlist_HGVS_\d+_ProteinExpression_@change$")
 PROT_EXPR_TEXT_RE = re.compile(r"ClassifiedRecord_SimpleAllele_HGVSlist_HGVS_\d+_ProteinExpression_Expression_#text$")
 GENE_SYMBOL_KEY_RE = re.compile(r"ClassifiedRecord_SimpleAllele_GeneList_Gene(?:_\d+)?_@Symbol$")
+
+# --- FIXED regexes: allow optional index ---
+RCV_RE = re.compile(r"ClassifiedRecord_RCVList_RCVAccession(?:_(\d+))?_@Accession$")
+CLASSIFICATION_RE = re.compile(r"ClassifiedRecord_RCVList_RCVAccession(?:_(\d+))?_RCVClassifications_(\w+?)Classification")
 
 # --- Helpers ---
 def norm(s: str) -> str:
@@ -135,6 +141,98 @@ def extract_gene_info(flat: dict, target_gene_symbol: str, assembly="GRCh38"):
             return info
     return info
 
+# --- FIXED classification extraction (robust to indexed/unindexed + multi-conditions) ---
+def extract_all_classifications(flat: dict):
+    classifications = {
+        "Germline": [],
+        "SomaticClinicalImpact": [],
+        "Oncogenicity": []
+    }
+
+    # Detect whether we have indexed RCVs; only use unindexed if no indexed exist
+    indexed = set()
+    has_unindexed = False
+    for k in flat.keys():
+        m = RCV_RE.match(k)
+        if not m:
+            continue
+        if m.group(1) is None:
+            has_unindexed = True
+        else:
+            indexed.add(m.group(1))
+
+    if indexed:
+        # sort numeric indices
+        rcv_indices = sorted(indexed, key=lambda x: int(x))
+        use_unindexed = False
+    else:
+        rcv_indices = [None] if has_unindexed else []
+        use_unindexed = has_unindexed
+
+    def base_prefix_for(i):
+        # i=None -> unindexed base, else indexed
+        return "ClassifiedRecord_RCVList_RCVAccession_" if i is None else f"ClassifiedRecord_RCVList_RCVAccession_{i}_"
+
+    def collect_conditions_for(i):
+        base = base_prefix_for(i)
+        conds = []
+        # Handles ..._ClassifiedCondition_#text and ..._ClassifiedCondition_0_#text, _1_, ...
+        cond_pat = re.compile(re.escape(base) + r"ClassifiedConditionList_ClassifiedCondition(?:_\d+)?_#text$")
+        for k, v in flat.items():
+            if cond_pat.match(k) and v and str(v).strip() != "NA":
+                conds.append(str(v).strip())
+        return "; ".join(sorted(set(conds))) if conds else "NA"
+
+    # Pre-index the classification types by index to avoid cross-talk
+    # key: idx (str or None) -> set of class types for that idx
+    idx_to_types = {}
+    for k in flat.keys():
+        m = CLASSIFICATION_RE.match(k)
+        if not m:
+            continue
+        idx = m.group(1)  # may be None
+        # honor unindexed only when we are using unindexed
+        if idx is None and not use_unindexed:
+            continue
+        if idx is not None and idx not in rcv_indices:
+            continue
+        idx_to_types.setdefault(idx, set()).add(m.group(2))  # Germline, SomaticClinicalImpact, Oncogenicity
+
+    for i in rcv_indices:
+        condition = collect_conditions_for(i)
+        base = base_prefix_for(i)
+        class_types = idx_to_types.get(i, set())
+
+        for class_type in sorted(class_types):
+            class_prefix = f"{base}RCVClassifications_{class_type}Classification_"
+
+            review_status = flat.get(class_prefix + "ReviewStatus_#text", "NA")
+            description = flat.get(class_prefix + "Description_#text", "NA")
+            submission_count = flat.get(class_prefix + "Description_@SubmissionCount", "NA")
+            date_last_evaluated = flat.get(class_prefix + "Description_@DateLastEvaluated", "NA")
+
+            record = {
+                "condition": condition,
+                "review_status": review_status,
+                "description": description,
+                "submission_count": submission_count
+            }
+            if date_last_evaluated != "NA":
+                record["date_last_evaluated"] = date_last_evaluated
+
+            if class_type == "SomaticClinicalImpact":
+                record["clinical_impact_type"] = flat.get(class_prefix + "Description_@ClinicalImpactAssertionType", "NA")
+                record["clinical_impact_significance"] = flat.get(class_prefix + "Description_@ClinicalImpactClinicalSignificance", "NA")
+
+            if class_type in classifications:
+                classifications[class_type].append(record)
+
+    # Dump lists as JSON strings for Excel cells
+    for k in classifications:
+        classifications[k] = json.dumps(classifications[k])
+
+    return classifications
+
 def extract_fields(flat: dict):
     if not has_coding_missense(flat):
         return None
@@ -146,11 +244,7 @@ def extract_fields(flat: dict):
     genomic_stop = gene_loc.get("@stop", "NA") if isinstance(gene_loc, dict) else "NA"
     ref_allele = var_loc.get("@referenceAlleleVCF", "NA") if isinstance(var_loc, dict) else var_loc
     alt_allele = var_loc.get("@alternateAlleleVCF", "NA") if isinstance(var_loc, dict) else "NA"
-    diseases = "; ".join(sorted(set(v for k, v in flat.items() if "ClassifiedConditionList_ClassifiedCondition_#text" in k and v and v != "NA"))) or "NA"
-    review_status = "; ".join(sorted(set(v for k, v in flat.items() if "GermlineClassification_ReviewStatus_#text" in k and v and v != "NA"))) or "NA"
-    germline_classification = "; ".join(sorted(set(v for k, v in flat.items() if "GermlineClassification_Description_#text" in k and v and v != "NA"))) or "NA"
-    condition_list = "; ".join(sorted(set(v for k, v in flat.items() if "GermlineClassification_ConditionList" in k and v and v != "NA"))) or "NA"
-    pubmed_ids = "; ".join(sorted(set(v for k, v in flat.items() if "Citation_ID_#text" in k and v and v != "NA"))) or "NA"
+    all_classifications = extract_all_classifications(flat)
     molecular_consequence = collect_molecular_consequences(flat)
     prot_hgvs_full, prot_hgvs_code = get_all_protein_hgvs_expressions(flat)
     return {
@@ -174,13 +268,9 @@ def extract_fields(flat: dict):
         "MutatedTo": alt_aa,
         "MolecularConsequence": molecular_consequence,
         "VariantType": flat.get("@VariationType", "NA"),
-        "NumberOfSubmissions": flat.get("@NumberOfSubmissions", "NA"),
-        "NumberOfSubmitters": flat.get("@NumberOfSubmitters", "NA"),
-        "ReviewStatus": review_status,
-        "GermlineClassification": germline_classification,
-        "ConditionList": condition_list,
-        "Diseases": diseases,
-        "PubMedIDs": pubmed_ids,
+        "Germline_Classifications": all_classifications["Germline"],
+        "Somatic_Classifications": all_classifications["SomaticClinicalImpact"],
+        "Oncogenic_Classifications": all_classifications["Oncogenicity"],
     }
 
 def stream_variants(json_path: str):
@@ -225,7 +315,6 @@ def main():
                 rec_copy = rec.copy()
                 rec_copy["GeneSymbol"] = g
                 rec_copy["UniProtID"] = uid
-                # overwrite NA gene info using extract_gene_info
                 gene_info = extract_gene_info(flat, g, assembly="GRCh38")
                 for col, val in gene_info.items():
                     if rec_copy.get(col, "NA") == "NA" and val != "NA":
@@ -246,8 +335,7 @@ def main():
                   "GeneFullName", "GeneID", "RelationshipType", "Chromosome", "GenomicStart", "GenomicStop", 
                   "RefAllele", "AltAllele", "ProteinChange", "ProteinHGVSFull", "ProteinHGVSCode",
                   "MutatedFrom", "ProteinPosition", "MutatedTo", 
-                  "MolecularConsequence", "VariantType", "NumberOfSubmissions", "NumberOfSubmitters", 
-                  "ReviewStatus", "GermlineClassification", "ConditionList", "Diseases", "PubMedIDs"]
+                  "MolecularConsequence", "VariantType", "Germline_Classifications", "Somatic_Classifications", "Oncogenic_Classifications"]
     df_out = df_out[[c for c in df_columns if c in df_out.columns]].sort_values(
         by=["UniProtID", "GeneSymbol", "VariationID"], kind="stable"
     )
