@@ -2,8 +2,7 @@ After downloading a Clinvar VCV .xml file (and unzipping), which I did on hoffma
 This code will output the "UniProtID", "GeneSymbol", "VariationID", "Accession", "VariationName", "Species", 
                   "GeneFullName", "GeneID", "RelationshipType", "Chromosome", "GenomicStart", "GenomicStop", 
                   "RefAllele", "AltAllele", "ProteinChange", "MutatedFrom", "ProteinPosition", "MutatedTo", 
-                  "MolecularConsequence", "VariantType", "NumberOfSubmissions", "NumberOfSubmitters", 
-                  "ReviewStatus", "GermlineClassification", "ConditionList", "Diseases", "PubMedIDs"
+                  "MolecularConsequence", "VariantType", "GermlineClassification", "Somatic_Classifications", "Oncogenic_Classifications:
 for each variant on a spreadsheet.
 
 Several variant (each denoted by VariationArchive have several HGVS, this code only looks at the coding mutations and missense. You can change this filtering by 
