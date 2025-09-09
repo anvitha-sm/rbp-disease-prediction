@@ -7,3 +7,5 @@ for each variant on a spreadsheet.
 
 Several variant (each denoted by VariationArchive have several HGVS, this code only looks at the coding mutations and missense. You can change this filtering by 
 editing the molecular_consequence_@type =="coding" to nonsense or deletion, but check how the .json has it!
+
+On Hoffman2: /u/project/kappel/tchhabri/clinvar/parseAugData_withClassificationns4.py
